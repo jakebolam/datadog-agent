@@ -58,8 +58,8 @@ func newTestReceiverConfig() *config.AgentConfig {
 func TestMain(m *testing.M) {
 	seelog.UseLogger(seelog.Disabled)
 
-	defer func(old func(string)) { killProcess = old }(killProcess)
-	killProcess = func(_ string) {}
+	defer func(old func(string, ...interface{})) { killProcess = old }(killProcess)
+	killProcess = func(_ string, _ ...interface{}) {}
 
 	m.Run()
 }
@@ -812,10 +812,10 @@ func TestWatchdog(t *testing.T) {
 func TestOOMKill(t *testing.T) {
 	var kills uint64
 
-	defer func(old func(string)) { killProcess = old }(killProcess)
-	killProcess = func(msg string) {
-		if msg != "OOM" {
-			t.Fatalf("wrong message: %s", msg)
+	defer func(old func(string, ...interface{})) { killProcess = old }(killProcess)
+	killProcess = func(format string, a ...interface{}) {
+		if !strings.Contains(format, "Memory threshold exceeded") {
+			t.Fatalf("wrong message: %s", fmt.Sprintf(format, a...))
 		}
 		atomic.AddUint64(&kills, 1)
 	}
