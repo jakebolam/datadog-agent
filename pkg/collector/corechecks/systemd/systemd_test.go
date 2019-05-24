@@ -31,17 +31,6 @@ func connListUnitsFake(c *dbus.Conn) ([]dbus.UnitStatus, error) {
 	}, nil
 }
 
-func connGetUnitTypePropertiesFake(c *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
-	props := map[string]interface{}{
-		"ActiveState":          "active",
-		"CPUUsageNSec":         uint64(10),
-		"MemoryCurrent":        uint64(20),
-		"TasksCurrent":         uint64(30),
-		"ActiveEnterTimestamp": uint64(40),
-	}
-	return props, nil
-}
-
 func connCloseFake(c *dbus.Conn) {
 }
 
@@ -79,7 +68,15 @@ func TestOverallMetrics(t *testing.T) {
 	dbusNew = dbusNewFake
 	connListUnits = connListUnitsFake
 	connClose = connCloseFake
-	connGetUnitTypeProperties = connGetUnitTypePropertiesFake
+	connGetUnitTypeProperties = func(c *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"ActiveState":          "active",
+			"CPUUsageNSec":         uint64(10),
+			"MemoryCurrent":        uint64(20),
+			"TasksCurrent":         uint64(30),
+			"ActiveEnterTimestamp": uint64(40),
+		}, nil
+	}
 
 	// create an instance of our test object
 	check := new(Check)
@@ -126,17 +123,17 @@ func TestMonitoredUnitsDeclaredInConfig(t *testing.T) {
 			case "unit1.service":
 				return map[string]interface{}{
 					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(40),
+					"ActiveEnterTimestamp": uint64(100),
 				}, nil
 			case "unit2.service":
 				return map[string]interface{}{
 					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(140),
+					"ActiveEnterTimestamp": uint64(200),
 				}, nil
 			case "unit3.service":
 				return map[string]interface{}{
 					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(40),
+					"ActiveEnterTimestamp": uint64(300),
 				}, nil
 			}
 		}
@@ -165,13 +162,13 @@ unit_names:
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.cpu", float64(10), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.memory", float64(20), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.tasks", float64(30), "", unit1Tags)
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(960), "", unit1Tags)
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(900), "", unit1Tags)
 
 	unit2Tags := []string{"unit:unit2.service", "active_state:active"}
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.cpu", float64(110), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.memory", float64(120), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.tasks", float64(130), "", unit2Tags)
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(860), "", unit2Tags)
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(800), "", unit2Tags)
 	mockSender.AssertNumberOfCalls(t, "Commit", 1)
 }
