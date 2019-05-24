@@ -27,6 +27,7 @@ const (
 	unitActiveState  = "active"
 	unitTypeUnit     = "Unit"
 	unitTypeService  = "Service"
+	serviceSuffix    = "service"
 )
 
 // For testing purpose
@@ -78,13 +79,15 @@ func (c *Check) Run() error {
 	}
 	defer connClose(conn)
 
-	submitOverallMetrics(sender, conn)
+	// All Units
+	submitUnitOverallMetrics(sender, conn)
 
+	// Monitored Units
 	for _, unitName := range c.config.instance.UnitNames {
 		tags := []string{unitTag + ":" + unitName}
-		c.submitUnitMetrics(sender, conn, unitName, tags)
-		if strings.HasSuffix(unitName, ".service") {
-			c.submitServiceMetrics(sender, conn, unitName, tags)
+		c.submitMonitoredUnitMetrics(sender, conn, unitName, tags)
+		if strings.HasSuffix(unitName, "."+serviceSuffix) {
+			c.submitMonitoredServiceMetrics(sender, conn, unitName, tags)
 		}
 	}
 
@@ -93,7 +96,42 @@ func (c *Check) Run() error {
 	return nil
 }
 
-func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+func submitUnitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
+	log.Info("Check Overall Metrics")
+	units, err := connListUnits(conn)
+	if err != nil {
+		log.Errorf("Error getting list of units")
+	}
+
+	activeUnitCounter := 0
+	for _, unit := range units {
+		log.Info("[DEV] [unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
+		if unit.ActiveState == unitActiveState {
+			activeUnitCounter++
+		}
+
+		tags := []string{unitTag + ":" + unit.Name}
+
+		properties, err := connGetUnitTypeProperties(conn, unit.Name, unitTypeUnit)
+		if err != nil {
+			log.Errorf("Error getting properties for unit '%s': %v", unit.Name, err)
+			// TODO: test this condition
+			continue
+		}
+
+		activeState, err := getStringProperty(properties, "ActiveState")
+		if err != nil {
+			log.Errorf("Error getting property for unit '%s': %v", unit.Name, err)
+		} else {
+			tags = append(tags, "active_state:"+activeState)
+		}
+		sender.Gauge("systemd.unit.count", 1, "", tags)
+	}
+
+	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
+}
+
+func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	log.Infof("[DEV] Check Unit %s", unitName)
 
 	properties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit)
@@ -111,9 +149,41 @@ func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, uni
 	activeEnterTime, err := getNumberProperty(properties, "ActiveEnterTimestamp") // microseconds
 	if err != nil {
 		log.Errorf("Error getting property ActiveEnterTimestamp: %v", err)
-	} else {
-		sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNanoNow())), "", tags) // microseconds
+		// TODO: test this dase
+		return
 	}
+	sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNanoNow())), "", tags) // microseconds
+}
+
+func (c *Check) submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
+	value, err := getNumberProperty(properties, propertyName)
+	if err != nil {
+		log.Errorf("Error getting property %s: %v", propertyName, err)
+		return
+	}
+	sender.Gauge(metric, float64(value), "", tags)
+}
+
+func (c *Check) submitMonitoredServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+	unitProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit) // TODO: change me
+	if err != nil {
+		log.Errorf("Error getting unitProperties for service: %s", unitName)
+	}
+	activeState, err := getStringProperty(unitProperties, "ActiveState")
+	if err != nil {
+		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
+		return
+	}
+	tags = append(tags, "active_state:"+activeState)
+
+	serviceProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeService) // TODO: change me
+	if err != nil {
+		log.Errorf("Error getting serviceProperties for service: %s", unitName)
+	}
+
+	c.submitPropertyAsGauge(sender, serviceProperties, "CPUUsageNSec", "systemd.unit.cpu", tags)
+	c.submitPropertyAsGauge(sender, serviceProperties, "MemoryCurrent", "systemd.unit.memory", tags)
+	c.submitPropertyAsGauge(sender, serviceProperties, "TasksCurrent", "systemd.unit.tasks", tags)
 }
 
 func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
@@ -123,16 +193,6 @@ func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
 	log.Infof("uptime: %v", uptime)
 	log.Infof("uptime mins: %v", uptime/1000000/60)
 	return uptime
-}
-
-func submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
-	value, err := getNumberProperty(properties, propertyName)
-	if err != nil {
-		log.Errorf("Error getting property %s: %v", propertyName, err)
-		return
-	}
-
-	sender.Gauge(metric, float64(value), "", tags)
 }
 
 func getNumberProperty(properties map[string]interface{}, propertyName string) (uint64, error) {
@@ -156,65 +216,7 @@ func getStringProperty(properties map[string]interface{}, propertyName string) (
 	return value, nil
 }
 
-func (c *Check) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
-	unitProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit) // TODO: change me
-	if err != nil {
-		log.Errorf("Error getting unitProperties for service: %s", unitName)
-	}
-	activeState, err := getStringProperty(unitProperties, "ActiveState")
-	if err != nil {
-		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
-		return
-	}
-	tags = append(tags, "active_state:"+activeState)
-
-	serviceProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeService) // TODO: change me
-	if err != nil {
-		log.Errorf("Error getting serviceProperties for service: %s", unitName)
-	}
-
-	submitPropertyAsGauge(sender, serviceProperties, "CPUUsageNSec", "systemd.unit.cpu", tags)
-	submitPropertyAsGauge(sender, serviceProperties, "MemoryCurrent", "systemd.unit.memory", tags)
-	submitPropertyAsGauge(sender, serviceProperties, "TasksCurrent", "systemd.unit.tasks", tags)
-}
-
-func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
-	log.Info("Check Overall Metrics")
-	units, err := connListUnits(conn)
-	if err != nil {
-		log.Errorf("Error getting list of units")
-	}
-
-	activeUnitCounter := 0
-	for _, unit := range units {
-		log.Info("[DEV] [unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
-		if unit.ActiveState == unitActiveState {
-			activeUnitCounter++
-		}
-
-		tags := []string{unitTag + ":" + unit.Name}
-
-		properties, err := connGetUnitTypeProperties(conn, unit.Name, unitTypeUnit)
-		if err != nil {
-			log.Errorf("Error getting unit properties: %s", unit.Name)
-		}
-
-		log.Infof("Unit Properties len: %v", len(properties))
-		log.Infof("Unit Properties len: %v", properties)
-
-		activeState, err := getStringProperty(properties, "ActiveState")
-		if err != nil {
-			log.Errorf("Error getting property for unit '%s': %v", unit.Name, err)
-		} else {
-			tags = append(tags, "active_state:"+activeState)
-		}
-		sender.Gauge("systemd.unit.count", 1, "", tags)
-	}
-
-	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
-}
-
-// Configure configures the network checks
+// Configure configures the systemd checks
 func (c *Check) Configure(rawInstance integration.Data, rawInitConfig integration.Data) error {
 	err := c.CommonConfigure(rawInstance)
 	if err != nil {
