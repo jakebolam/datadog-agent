@@ -16,22 +16,30 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-type Conn struct {
+type mockSystemdStats struct {
+	mock.Mock
 }
 
-func dbusNewFake() (*dbus.Conn, error) {
+func (s *mockSystemdStats) NewConn() (*dbus.Conn, error) {
 	return nil, nil
 }
 
-func connListUnitsFake(c *dbus.Conn) ([]dbus.UnitStatus, error) {
-	return []dbus.UnitStatus{
-		{Name: "unit1.service", ActiveState: "active"},
-		{Name: "unit2.service", ActiveState: "active"},
-		{Name: "unit3.service", ActiveState: "inactive"},
-	}, nil
+func (s *mockSystemdStats) CloseConn(c *dbus.Conn) {
 }
 
-func connCloseFake(c *dbus.Conn) {
+func (s *mockSystemdStats) ListUnits(conn *dbus.Conn) ([]dbus.UnitStatus, error) {
+	args := s.Mock.Called(conn)
+	return args.Get(0).([]dbus.UnitStatus), args.Error(1)
+}
+
+func (s *mockSystemdStats) TimeNanoNow() int64 {
+	args := s.Mock.Called()
+	return args.Get(0).(int64)
+}
+
+func (s *mockSystemdStats) GetUnitTypeProperties(conn *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
+	args := s.Mock.Called(conn, unitName, unitType)
+	return args.Get(0).(map[string]interface{}), args.Error(1)
 }
 
 func TestDefaultConfiguration(t *testing.T) {
@@ -45,6 +53,7 @@ func TestDefaultConfiguration(t *testing.T) {
 
 func TestConfiguration(t *testing.T) {
 	check := Check{}
+
 	rawInstanceConfig := []byte(`
 unit_names:
  - ssh.service
@@ -65,21 +74,24 @@ unit_regex:
 	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
 }
 func TestOverallMetrics(t *testing.T) {
-	dbusNew = dbusNewFake
-	connListUnits = connListUnitsFake
-	connClose = connCloseFake
-	connGetUnitTypeProperties = func(c *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"ActiveState":          "active",
-			"CPUUsageNSec":         uint64(10),
-			"MemoryCurrent":        uint64(20),
-			"TasksCurrent":         uint64(30),
-			"ActiveEnterTimestamp": uint64(40),
-		}, nil
-	}
-
 	// create an instance of our test object
-	check := new(Check)
+	stats := &mockSystemdStats{}
+	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
+		{Name: "unit1.service", ActiveState: "active"},
+		{Name: "unit2.service", ActiveState: "active"},
+		{Name: "unit3.service", ActiveState: "inactive"},
+	}, nil)
+
+	stats.On("GetUnitTypeProperties", mock.Anything, mock.Anything, mock.Anything).Return(map[string]interface{}{
+		"ActiveState":          "active",
+		"CPUUsageNSec":         uint64(10),
+		"MemoryCurrent":        uint64(20),
+		"TasksCurrent":         uint64(30),
+		"ActiveEnterTimestamp": uint64(40),
+	}, nil)
+
+	check := Check{stats: stats}
+
 	check.Configure(nil, nil)
 
 	// setup expectations
@@ -92,62 +104,56 @@ func TestOverallMetrics(t *testing.T) {
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.active.count", float64(2), "", []string(nil))
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit1.service", "active_state:active"})
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit2.service", "active_state:active"})
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit3.service", "active_state:active"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit3.service", "active_state:inactive"})
 	mockSender.AssertNumberOfCalls(t, "Gauge", 4)
 	mockSender.AssertNumberOfCalls(t, "Commit", 1)
 }
 
 func TestMonitoredUnitsDeclaredInConfig(t *testing.T) {
-	dbusNew = dbusNewFake
-	connListUnits = connListUnitsFake
-	connClose = connCloseFake
-	connGetUnitTypeProperties = func(c *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
-		switch unitType {
-		case "Service":
-			switch unitName {
-			case "unit1.service":
-				return map[string]interface{}{
-					"CPUUsageNSec":  uint64(10),
-					"MemoryCurrent": uint64(20),
-					"TasksCurrent":  uint64(30),
-				}, nil
-			case "unit2.service":
-				return map[string]interface{}{
-					"CPUUsageNSec":  uint64(110),
-					"MemoryCurrent": uint64(120),
-					"TasksCurrent":  uint64(130),
-				}, nil
-			}
-		case "Unit":
-			switch unitName {
-			case "unit1.service":
-				return map[string]interface{}{
-					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(100),
-				}, nil
-			case "unit2.service":
-				return map[string]interface{}{
-					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(200),
-				}, nil
-			case "unit3.service":
-				return map[string]interface{}{
-					"ActiveState":          "active",
-					"ActiveEnterTimestamp": uint64(300),
-				}, nil
-			}
-		}
-		return nil, nil
-	}
-	timeNanoNow = func() int64 { return 1000 * 1000 }
+	// timeNanoNow = func() int64 { return 1000 * 1000 }
 
 	rawInstanceConfig := []byte(`
 unit_names:
  - unit1.service
  - unit2.service
 `)
+
 	// create an instance of our test object
-	check := new(Check)
+	stats := &mockSystemdStats{}
+	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
+		{Name: "unit1.service", ActiveState: "active"},
+		{Name: "unit2.service", ActiveState: "active"},
+		{Name: "unit3.service", ActiveState: "inactive"},
+	}, nil)
+	stats.On("TimeNanoNow").Return(int64(1000 * 1000))
+
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit1.service", unitTypeService).Return(map[string]interface{}{
+		"CPUUsageNSec":  uint64(10),
+		"MemoryCurrent": uint64(20),
+		"TasksCurrent":  uint64(30),
+	}, nil)
+
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit2.service", unitTypeService).Return(map[string]interface{}{
+		"CPUUsageNSec":  uint64(110),
+		"MemoryCurrent": uint64(120),
+		"TasksCurrent":  uint64(130),
+	}, nil)
+
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit1.service", unitTypeUnit).Return(map[string]interface{}{
+		"ActiveState":          "active",
+		"ActiveEnterTimestamp": uint64(100),
+	}, nil)
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit2.service", unitTypeUnit).Return(map[string]interface{}{
+		"ActiveState":          "active",
+		"ActiveEnterTimestamp": uint64(200),
+	}, nil)
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit3.service", unitTypeUnit).Return(map[string]interface{}{
+		"ActiveState":          "active",
+		"ActiveEnterTimestamp": uint64(300),
+	}, nil)
+
+	check := Check{stats: stats}
+
 	check.Configure(rawInstanceConfig, nil)
 
 	// setup expectations
