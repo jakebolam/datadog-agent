@@ -88,23 +88,19 @@ func (s *defaultSystemdStats) GetUnitTypeProperties(c *dbus.Conn, unitName strin
 
 // Run executes the check
 func (c *Check) Run() error {
-
-	log.Warnf("[DEV] c.config.instance.UnitNames Run: %v", c.config.instance.UnitNames)
-	log.Warnf("[DEV] c.config.instance.UnitRegexStrings Run: %v", c.config.instance.UnitRegexStrings)
-	log.Warnf("[DEV] c.config.instance.UnitRegexPatterns Run: %v", c.config.instance.UnitRegexPatterns)
-
 	sender, err := aggregator.GetSender(c.ID())
 	if err != nil {
+		// TODO: test this case
 		return err
 	}
 
 	conn, err := c.stats.NewConn()
 	if err != nil {
 		log.Error("New Connection Err: ", err)
+		// TODO: test this case
 		return err
 	}
 	defer c.stats.CloseConn(conn)
-
 	// TODO: CHECK conn.SystemState()
 
 	// All Units
@@ -113,6 +109,8 @@ func (c *Check) Run() error {
 	// Monitored Units
 	for _, unitName := range c.config.instance.UnitNames {
 		tags := []string{unitTag + ":" + unitName}
+		tags = append(tags, c.getUnitTags(conn, unitName)...)
+
 		c.submitMonitoredUnitMetrics(sender, conn, unitName, tags)
 		if strings.HasSuffix(unitName, "."+serviceSuffix) {
 			c.submitMonitoredServiceMetrics(sender, conn, unitName, tags)
@@ -120,8 +118,23 @@ func (c *Check) Run() error {
 	}
 
 	sender.Commit()
-
 	return nil
+}
+
+func (c *Check) getUnitTags(conn *dbus.Conn, unitName string) []string {
+	unitProperties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeUnit)
+	if err != nil {
+		log.Errorf("Error getting unitProperties for service: %s", unitName)
+		// TODO: test this case
+		return nil
+	}
+	activeState, err := getStringProperty(unitProperties, "ActiveState")
+	if err != nil {
+		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
+		// TODO: test this case
+		return nil
+	}
+	return []string{unitActiveStateTag + ":" + activeState}
 }
 
 func (c *Check) submitOverallUnitMetrics(sender aggregator.Sender, conn *dbus.Conn) {
@@ -129,11 +142,12 @@ func (c *Check) submitOverallUnitMetrics(sender aggregator.Sender, conn *dbus.Co
 	units, err := c.stats.ListUnits(conn)
 	if err != nil {
 		log.Errorf("Error getting list of units")
+		// TODO: test this case
+		return
 	}
 
 	activeUnitCounter := 0
 	for _, unit := range units {
-		log.Info("[DEV] [unit] %s: ActiveState=%s, SubState=%s", unit.Name, unit.ActiveState, unit.SubState)
 		if unit.ActiveState == unitActiveState {
 			activeUnitCounter++
 		}
@@ -147,24 +161,14 @@ func (c *Check) submitOverallUnitMetrics(sender aggregator.Sender, conn *dbus.Co
 }
 
 func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
-	log.Infof("[DEV] Check Unit %s", unitName)
-
-	properties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeUnit)
+	unitProperties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeUnit)
 	if err != nil {
-		log.Errorf("Error getting unit properties: %s", unitName)
+		log.Errorf("Error getting unit unitProperties: %s", unitName)
 		// TODO: test this case
 		return
 	}
 
-	activeState, err := getStringProperty(properties, "ActiveState")
-	if err != nil {
-		log.Errorf("Error getting property: %s", err)
-		// TODO: test this dase
-	} else {
-		tags = append(tags, unitActiveStateTag+":"+activeState)
-	}
-
-	activeEnterTime, err := getNumberProperty(properties, "ActiveEnterTimestamp")
+	activeEnterTime, err := getNumberProperty(unitProperties, "ActiveEnterTimestamp")
 	if err != nil {
 		log.Errorf("Error getting property ActiveEnterTimestamp: %v", err)
 		// TODO: test this dase
@@ -174,19 +178,6 @@ func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.
 }
 
 func (c *Check) submitMonitoredServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
-	unitProperties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeUnit)
-	if err != nil {
-		log.Errorf("Error getting unitProperties for service: %s", unitName)
-		// TODO: test this case
-		return
-	}
-	activeState, err := getStringProperty(unitProperties, "ActiveState")
-	if err != nil {
-		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
-		// TODO: test this case
-		return
-	}
-	tags = append(tags, unitActiveStateTag+":"+activeState)
 	serviceProperties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeService)
 	if err != nil {
 		log.Errorf("Error getting serviceProperties for service: %s", unitName)
@@ -210,32 +201,25 @@ func sendPropertyAsGauge(sender aggregator.Sender, properties map[string]interfa
 }
 
 func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
-	log.Infof("[DEV] activeEnterTime: %v %T", activeEnterTime, activeEnterTime)
-	log.Infof("[DEV] nanoNow: %v %T", nanoNow, nanoNow)
 	uptime := nanoNow/1000 - int64(activeEnterTime)
-	log.Infof("[DEV] uptime: %v", uptime)
-	log.Infof("[DEV] uptime mins: %v", uptime/1000000/60)
 	return uptime
 }
 
 func getNumberProperty(properties map[string]interface{}, propertyName string) (uint64, error) {
-	log.Infof("[DEV] properties[propertyName]: %s", properties[propertyName])
 	value, ok := properties[propertyName].(uint64)
 	if !ok {
+		// TODO: test this case
 		return 0, fmt.Errorf("Property %s is not a uint64", propertyName)
 	}
-
-	log.Infof("[DEV] Get Number Property %s = %d", propertyName, value)
 	return value, nil
 }
 
 func getStringProperty(properties map[string]interface{}, propertyName string) (string, error) {
 	value, ok := properties[propertyName].(string)
 	if !ok {
+		// TODO: test this case
 		return "", fmt.Errorf("Property %s is not a string", propertyName)
 	}
-
-	log.Infof("[DEV] Get String Property %s = %s", propertyName, value)
 	return value, nil
 }
 
@@ -243,29 +227,29 @@ func getStringProperty(properties map[string]interface{}, propertyName string) (
 func (c *Check) Configure(rawInstance integration.Data, rawInitConfig integration.Data) error {
 	err := c.CommonConfigure(rawInstance)
 	if err != nil {
+		// TODO: test this case
 		return err
 	}
 	err = yaml.Unmarshal(rawInitConfig, &c.config.initConf)
 	if err != nil {
+		// TODO: test this case
 		return err
 	}
 	err = yaml.Unmarshal(rawInstance, &c.config.instance)
 	if err != nil {
+		// TODO: test this case
 		return err
 	}
-
-	log.Warnf("[DEV] c.config.instance.UnitNames: %v", c.config.instance.UnitNames)
-	log.Warnf("[DEV] c.config.instance.UnitRegexStrings: %v", c.config.instance.UnitRegexStrings)
 
 	for _, regexString := range c.config.instance.UnitRegexStrings {
 		pattern, err := regexp.Compile(regexString)
 		if err != nil {
 			log.Errorf("Failed to parse systemd check option unit_regex: %s", err)
-		} else {
-			c.config.instance.UnitRegexPatterns = append(c.config.instance.UnitRegexPatterns, pattern)
+			// TODO: test this case
+			continue
 		}
+		c.config.instance.UnitRegexPatterns = append(c.config.instance.UnitRegexPatterns, pattern)
 	}
-	log.Warnf("[DEV] c.config.instance.UnitRegexPatterns: %v", c.config.instance.UnitRegexPatterns)
 	return nil
 }
 

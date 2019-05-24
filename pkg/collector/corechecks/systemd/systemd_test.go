@@ -52,8 +52,8 @@ func TestDefaultConfiguration(t *testing.T) {
 }
 
 func TestConfiguration(t *testing.T) {
+	// setup data
 	check := Check{}
-
 	rawInstanceConfig := []byte(`
 unit_names:
  - ssh.service
@@ -74,7 +74,7 @@ unit_regex:
 	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
 }
 func TestOverallMetrics(t *testing.T) {
-	// create an instance of our test object
+	// setup data
 	stats := &mockSystemdStats{}
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
 		{Name: "unit1.service", ActiveState: "active"},
@@ -91,7 +91,6 @@ func TestOverallMetrics(t *testing.T) {
 	}, nil)
 
 	check := Check{stats: stats}
-
 	check.Configure(nil, nil)
 
 	// setup expectations
@@ -99,8 +98,10 @@ func TestOverallMetrics(t *testing.T) {
 	mockSender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mockSender.On("Commit").Return()
 
+	// run
 	check.Run()
 
+	// asssertions
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.active.count", float64(2), "", []string(nil))
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit1.service", "active_state:active"})
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit2.service", "active_state:active"})
@@ -110,15 +111,13 @@ func TestOverallMetrics(t *testing.T) {
 }
 
 func TestMonitoredUnitsDeclaredInConfig(t *testing.T) {
-	// timeNanoNow = func() int64 { return 1000 * 1000 }
-
+	// setup data
 	rawInstanceConfig := []byte(`
 unit_names:
  - unit1.service
  - unit2.service
 `)
 
-	// create an instance of our test object
 	stats := &mockSystemdStats{}
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
 		{Name: "unit1.service", ActiveState: "active"},
@@ -148,21 +147,22 @@ unit_names:
 		"ActiveEnterTimestamp": uint64(200),
 	}, nil)
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit3.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "active",
+		"ActiveState":          "inactive",
 		"ActiveEnterTimestamp": uint64(300),
 	}, nil)
 
 	check := Check{stats: stats}
-
 	check.Configure(rawInstanceConfig, nil)
 
-	// setup expectations
+	// setup expectation
 	mockSender := mocksender.NewMockSender(check.ID())
 	mockSender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mockSender.On("Commit").Return()
 
+	// run
 	check.Run()
 
+	// asssertions
 	unit1Tags := []string{"unit:unit1.service", "active_state:active"}
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.cpu", float64(10), "", unit1Tags)
@@ -176,5 +176,10 @@ unit_names:
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.memory", float64(120), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.tasks", float64(130), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(800), "", unit2Tags)
+
+	unit3Tags := []string{"unit:unit3.service", "active_state:inactive"}
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit3Tags)
+	mockSender.AssertNotCalled(t, "Gauge", "systemd.unit.cpu", mock.Anything, "", unit3Tags)
+
 	mockSender.AssertNumberOfCalls(t, "Commit", 1)
 }
