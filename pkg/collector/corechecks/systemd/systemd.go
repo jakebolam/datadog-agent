@@ -79,15 +79,17 @@ func (c *Check) Run() error {
 	}
 	defer connClose(conn)
 
+	// TODO: CHECK conn.SystemState()
+
 	// All Units
 	submitUnitOverallMetrics(sender, conn)
 
 	// Monitored Units
 	for _, unitName := range c.config.instance.UnitNames {
 		tags := []string{unitTag + ":" + unitName}
-		c.submitMonitoredUnitMetrics(sender, conn, unitName, tags)
+		submitMonitoredUnitMetrics(sender, conn, unitName, tags)
 		if strings.HasSuffix(unitName, "."+serviceSuffix) {
-			c.submitMonitoredServiceMetrics(sender, conn, unitName, tags)
+			submitMonitoredServiceMetrics(sender, conn, unitName, tags)
 		}
 	}
 
@@ -131,17 +133,20 @@ func submitUnitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
 	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
 }
 
-func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+func submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	log.Infof("[DEV] Check Unit %s", unitName)
 
 	properties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit)
 	if err != nil {
 		log.Errorf("Error getting unit properties: %s", unitName)
+		// TODO: test this case
+		return
 	}
 
 	activeState, err := getStringProperty(properties, "ActiveState")
 	if err != nil {
 		log.Errorf("Error getting property: %s", err)
+		// TODO: test this dase
 	} else {
 		tags = append(tags, "active_state:"+activeState)
 	}
@@ -155,16 +160,17 @@ func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.
 	sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNanoNow())), "", tags) // microseconds
 }
 
-func (c *Check) submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
+func submitPropertyAsGauge(sender aggregator.Sender, properties map[string]interface{}, propertyName string, metric string, tags []string) {
 	value, err := getNumberProperty(properties, propertyName)
 	if err != nil {
 		log.Errorf("Error getting property %s: %v", propertyName, err)
+		// TODO: test this dase
 		return
 	}
 	sender.Gauge(metric, float64(value), "", tags)
 }
 
-func (c *Check) submitMonitoredServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
+func submitMonitoredServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	unitProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit) // TODO: change me
 	if err != nil {
 		log.Errorf("Error getting unitProperties for service: %s", unitName)
@@ -181,9 +187,9 @@ func (c *Check) submitMonitoredServiceMetrics(sender aggregator.Sender, conn *db
 		log.Errorf("Error getting serviceProperties for service: %s", unitName)
 	}
 
-	c.submitPropertyAsGauge(sender, serviceProperties, "CPUUsageNSec", "systemd.unit.cpu", tags)
-	c.submitPropertyAsGauge(sender, serviceProperties, "MemoryCurrent", "systemd.unit.memory", tags)
-	c.submitPropertyAsGauge(sender, serviceProperties, "TasksCurrent", "systemd.unit.tasks", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "CPUUsageNSec", "systemd.unit.cpu", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "MemoryCurrent", "systemd.unit.memory", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "TasksCurrent", "systemd.unit.tasks", tags)
 }
 
 func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
