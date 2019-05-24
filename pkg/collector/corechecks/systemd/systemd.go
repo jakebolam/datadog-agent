@@ -25,17 +25,19 @@ const (
 	systemdCheckName = "systemd"
 	unitTag          = "unit"
 	unitActiveState  = "active"
+	unitTypeUnit     = "Unit"
+	unitTypeService  = "Service"
 )
 
 // For testing purpose
 var (
-	dbusNew               = dbus.New
-	connListUnits         = func(c *dbus.Conn) ([]dbus.UnitStatus, error) { return c.ListUnits() }
-	connGetUnitProperties = func(c *dbus.Conn, unitName string) (map[string]interface{}, error) {
-		return c.GetUnitProperties(unitName)
+	dbusNew                   = dbus.New
+	connListUnits             = func(c *dbus.Conn) ([]dbus.UnitStatus, error) { return c.ListUnits() }
+	connGetUnitTypeProperties = func(c *dbus.Conn, unitName string, unitType string) (map[string]interface{}, error) {
+		return c.GetUnitTypeProperties(unitName, unitType)
 	}
-	connClose = func(c *dbus.Conn) { c.Close() }
-	timeNow   = time.Now
+	connClose   = func(c *dbus.Conn) { c.Close() }
+	timeNanoNow = func() int64 { return time.Now().UnixNano() }
 )
 
 // Check doesn't need additional fields
@@ -94,13 +96,10 @@ func (c *Check) Run() error {
 func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
 	log.Infof("[DEV] Check Unit %s", unitName)
 
-	properties, err := connGetUnitProperties(conn, unitName)
+	properties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit)
 	if err != nil {
 		log.Errorf("Error getting unit properties: %s", unitName)
 	}
-
-	log.Infof("Unit Properties len: %v", len(properties))
-	log.Infof("Unit Properties len: %v", properties)
 
 	activeState, err := getStringProperty(properties, "ActiveState")
 	if err != nil {
@@ -109,13 +108,11 @@ func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn, uni
 		tags = append(tags, "active_state:"+activeState)
 	}
 
-	sender.Gauge("systemd.unit.count", 1, "", tags)
-
 	activeEnterTime, err := getNumberProperty(properties, "ActiveEnterTimestamp") // microseconds
 	if err != nil {
 		log.Errorf("Error getting property ActiveEnterTimestamp: %v", err)
 	} else {
-		sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNow().UnixNano())), "", tags) // microseconds
+		sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, timeNanoNow())), "", tags) // microseconds
 	}
 }
 
@@ -160,14 +157,25 @@ func getStringProperty(properties map[string]interface{}, propertyName string) (
 }
 
 func (c *Check) submitServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
-	properties, err := conn.GetUnitTypeProperties(unitName, "Service") // TODO: change me
+	unitProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeUnit) // TODO: change me
 	if err != nil {
-		log.Errorf("Error getting properties for service: %s", unitName)
+		log.Errorf("Error getting unitProperties for service: %s", unitName)
+	}
+	activeState, err := getStringProperty(unitProperties, "ActiveState")
+	if err != nil {
+		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
+		return
+	}
+	tags = append(tags, "active_state:"+activeState)
+
+	serviceProperties, err := connGetUnitTypeProperties(conn, unitName, unitTypeService) // TODO: change me
+	if err != nil {
+		log.Errorf("Error getting serviceProperties for service: %s", unitName)
 	}
 
-	submitPropertyAsGauge(sender, properties, "CPUUsageNSec", "systemd.unit.cpu", tags)
-	submitPropertyAsGauge(sender, properties, "MemoryCurrent", "systemd.unit.memory", tags)
-	submitPropertyAsGauge(sender, properties, "TasksCurrent", "systemd.unit.tasks", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "CPUUsageNSec", "systemd.unit.cpu", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "MemoryCurrent", "systemd.unit.memory", tags)
+	submitPropertyAsGauge(sender, serviceProperties, "TasksCurrent", "systemd.unit.tasks", tags)
 }
 
 func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
@@ -186,7 +194,7 @@ func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
 
 		tags := []string{unitTag + ":" + unit.Name}
 
-		properties, err := connGetUnitProperties(conn, unit.Name)
+		properties, err := connGetUnitTypeProperties(conn, unit.Name, unitTypeUnit)
 		if err != nil {
 			log.Errorf("Error getting unit properties: %s", unit.Name)
 		}
@@ -196,7 +204,7 @@ func submitOverallMetrics(sender aggregator.Sender, conn *dbus.Conn) {
 
 		activeState, err := getStringProperty(properties, "ActiveState")
 		if err != nil {
-			log.Errorf("Error getting property: %s", err)
+			log.Errorf("Error getting property for unit '%s': %v", unit.Name, err)
 		} else {
 			tags = append(tags, "active_state:"+activeState)
 		}
