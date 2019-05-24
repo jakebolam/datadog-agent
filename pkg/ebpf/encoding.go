@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/DataDog/datadog-agent/pkg/ebpf/netlink"
 	agent "github.com/DataDog/datadog-agent/pkg/process/model"
@@ -10,10 +11,46 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
-var jsonMarshaler = jsonpb.Marshaler{}
+// TODO move this code to a separate `encoding` package
 
-// MarshalProtobuf serializes a Connections object into a Protobuf message
-func MarshalProtobuf(conns *Connections) ([]byte, error) {
+type Marshaler interface {
+	Marshal(conns *Connections) ([]byte, error)
+	ContentType() string
+}
+
+type Unmarshaler interface {
+	Unmarshal([]byte) (*agent.Connections, error)
+}
+
+const (
+	ContentTypeProtobuf = "application/protobuf"
+	ContentTypeJSON     = "application/json"
+)
+
+var (
+	pSerializer = protoSerializer{}
+	jSerializer = jsonSerializer{}
+)
+
+func GetMarshaler(accept string) Marshaler {
+	if strings.Contains(ContentTypeProtobuf, accept) {
+		return pSerializer
+	}
+
+	return jSerializer
+}
+
+func GetUnmarshaler(ctype string) Unmarshaler {
+	if strings.Contains(ContentTypeProtobuf, ctype) {
+		return pSerializer
+	}
+
+	return jSerializer
+}
+
+type protoSerializer struct{}
+
+func (p protoSerializer) Marshal(conns *Connections) ([]byte, error) {
 	agentConns := make([]*agent.Connection, len(conns.Conns))
 	for i, conn := range conns.Conns {
 		agentConns[i] = FormatConnection(conn)
@@ -22,8 +59,7 @@ func MarshalProtobuf(conns *Connections) ([]byte, error) {
 	return proto.Marshal(payload)
 }
 
-// UnmarshalConnections deserializes a Protobuf message into a Connections object
-func UnmarshalProtobuf(blob []byte) (*agent.Connections, error) {
+func (p protoSerializer) Unmarshal(blob []byte) (*agent.Connections, error) {
 	conns := new(agent.Connections)
 	if err := proto.Unmarshal(blob, conns); err != nil {
 		return nil, err
@@ -31,26 +67,36 @@ func UnmarshalProtobuf(blob []byte) (*agent.Connections, error) {
 	return conns, nil
 }
 
-// MarshalJSON serializes a Connections object into a JSON document
-func MarshalJSON(conns *Connections) ([]byte, error) {
+func (p protoSerializer) ContentType() string {
+	return ContentTypeProtobuf
+}
+
+type jsonSerializer struct {
+	marshaller jsonpb.Marshaler
+}
+
+func (j jsonSerializer) Marshal(conns *Connections) ([]byte, error) {
 	agentConns := make([]*agent.Connection, len(conns.Conns))
 	for i, conn := range conns.Conns {
 		agentConns[i] = FormatConnection(conn)
 	}
 	payload := &agent.Connections{Conns: agentConns}
 	writer := new(bytes.Buffer)
-	err := jsonMarshaler.Marshal(writer, payload)
+	err := j.marshaller.Marshal(writer, payload)
 	return writer.Bytes(), err
 }
 
-// UnmarshalJSON deserializes a JSON document into a Connections object
-func UnmarshalJSON(blob []byte) (*agent.Connections, error) {
+func (j jsonSerializer) Unmarshal(blob []byte) (*agent.Connections, error) {
 	conns := new(agent.Connections)
 	reader := bytes.NewReader(blob)
 	if err := jsonpb.Unmarshal(reader, conns); err != nil {
 		return nil, err
 	}
 	return conns, nil
+}
+
+func (j jsonSerializer) ContentType() string {
+	return ContentTypeJSON
 }
 
 func FormatConnection(conn ConnectionStats) *agent.Connection {
