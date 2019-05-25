@@ -14,6 +14,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/aggregator"
 	"github.com/DataDog/datadog-agent/pkg/autodiscovery/integration"
 	"github.com/DataDog/datadog-agent/pkg/collector/check"
+	"github.com/DataDog/datadog-agent/pkg/metrics"
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/coreos/go-systemd/dbus"
 	"gopkg.in/yaml.v2"
@@ -175,6 +176,17 @@ func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.
 		return
 	}
 	sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, c.stats.TimeNanoNow())), "", tags)
+	c.submitMonitoredUnitStatusCheck(sender, unitName, unitProperties, tags)
+}
+
+func (c *Check) submitMonitoredUnitStatusCheck(sender aggregator.Sender, unitName string, unitProperties map[string]interface{}, tags []string) {
+	activeState, err := getStringProperty(unitProperties, "ActiveState")
+	if err != nil {
+		log.Errorf("Error getting property ActiveState: %v", err)
+		// TODO: test this dase
+		return
+	}
+	sender.ServiceCheck("systemd.unit.status", getServiceCheckStatus(activeState), "", tags, "")
 }
 
 func (c *Check) submitMonitoredServiceMetrics(sender aggregator.Sender, conn *dbus.Conn, unitName string, tags []string) {
@@ -221,6 +233,18 @@ func getStringProperty(properties map[string]interface{}, propertyName string) (
 		return "", fmt.Errorf("Property %s is not a string", propertyName)
 	}
 	return value, nil
+}
+
+func getServiceCheckStatus(activeState string) metrics.ServiceCheckStatus {
+	switch activeState {
+	case "active":
+		return metrics.ServiceCheckOK
+	case "inactive", "failed":
+		return metrics.ServiceCheckCritical
+	case "activating", "deactivating":
+		return metrics.ServiceCheckUnknown
+	}
+	return metrics.ServiceCheckUnknown
 }
 
 // Configure configures the systemd checks

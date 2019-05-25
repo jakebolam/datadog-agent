@@ -7,10 +7,12 @@
 package systemd
 
 import (
+	"fmt"
 	"regexp"
 	"testing"
 
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
+	"github.com/DataDog/datadog-agent/pkg/metrics"
 	"github.com/coreos/go-systemd/dbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -157,6 +159,8 @@ unit_names:
 	// setup expectation
 	mockSender := mocksender.NewMockSender(check.ID())
 	mockSender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockSender.On("ServiceCheck", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+
 	mockSender.On("Commit").Return()
 
 	// run
@@ -181,5 +185,80 @@ unit_names:
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit3Tags)
 	mockSender.AssertNotCalled(t, "Gauge", "systemd.unit.cpu", mock.Anything, "", unit3Tags)
 
+	expectedGaugeCalls := 3 * 2 /* 3 units * 2 metrics */
+	expectedGaugeCalls += 2 * 3 /* 2 service * 3 metrics */
+	mockSender.AssertNumberOfCalls(t, "Gauge", expectedGaugeCalls)
 	mockSender.AssertNumberOfCalls(t, "Commit", 1)
+}
+
+func TestMonitoredUnitsServiceCheck(t *testing.T) {
+	// setup data
+	rawInstanceConfig := []byte(`
+unit_names:
+ - unit1.service
+ - unit2.service
+`)
+
+	stats := &mockSystemdStats{}
+	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
+		{Name: "unit1.service", ActiveState: "active"},
+		{Name: "unit2.service", ActiveState: "inactive"},
+	}, nil)
+	stats.On("TimeNanoNow").Return(int64(1000 * 1000))
+
+	stats.On("GetUnitTypeProperties", mock.Anything, mock.Anything, unitTypeService).Return(map[string]interface{}{
+		"CPUUsageNSec":  uint64(1),
+		"MemoryCurrent": uint64(1),
+		"TasksCurrent":  uint64(1),
+	}, nil)
+
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit1.service", unitTypeUnit).Return(map[string]interface{}{
+		"ActiveState":          "active",
+		"ActiveEnterTimestamp": uint64(100),
+	}, nil)
+	stats.On("GetUnitTypeProperties", mock.Anything, "unit2.service", unitTypeUnit).Return(map[string]interface{}{
+		"ActiveState":          "inactive",
+		"ActiveEnterTimestamp": uint64(200),
+	}, nil)
+
+	check := Check{stats: stats}
+	check.Configure(rawInstanceConfig, nil)
+
+	// setup expectation
+	mockSender := mocksender.NewMockSender(check.ID())
+	mockSender.On("Gauge", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockSender.On("ServiceCheck", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockSender.On("Commit").Return()
+
+	// run
+	check.Run()
+
+	// asssertions
+	unit1Tags := []string{"unit:unit1.service", "active_state:active"}
+	mockSender.AssertCalled(t, "ServiceCheck", "systemd.unit.status", metrics.ServiceCheckOK, "", unit1Tags, "")
+
+	unit2Tags := []string{"unit:unit2.service", "active_state:inactive"}
+	mockSender.AssertCalled(t, "ServiceCheck", "systemd.unit.status", metrics.ServiceCheckCritical, "", unit2Tags, "")
+
+	mockSender.AssertNumberOfCalls(t, "ServiceCheck", 2)
+	mockSender.AssertNumberOfCalls(t, "Commit", 1)
+}
+
+func TestGetServiceCheckStatus(t *testing.T) {
+	data := []struct {
+		activeState    string
+		expectedStatus metrics.ServiceCheckStatus
+	}{
+		{"active", metrics.ServiceCheckOK},
+		{"inactive", metrics.ServiceCheckCritical},
+		{"failed", metrics.ServiceCheckCritical},
+		{"activating", metrics.ServiceCheckUnknown},
+		{"deactivating", metrics.ServiceCheckUnknown},
+		{"does not exist", metrics.ServiceCheckUnknown},
+	}
+	for _, d := range data {
+		t.Run(fmt.Sprintf("expected mapping from %s to %s", d.activeState, d.expectedStatus), func(t *testing.T) {
+			assert.Equal(t, d.expectedStatus, getServiceCheckStatus(d.activeState))
+		})
+	}
 }
