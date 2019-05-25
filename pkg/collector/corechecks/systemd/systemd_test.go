@@ -79,9 +79,9 @@ func TestOverallMetrics(t *testing.T) {
 	// setup data
 	stats := &mockSystemdStats{}
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
-		{Name: "unit1.service", ActiveState: "active"},
-		{Name: "unit2.service", ActiveState: "active"},
-		{Name: "unit3.service", ActiveState: "inactive"},
+		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
+		{Name: "unit2.service", ActiveState: "active", SubState: "my_substate"},
+		{Name: "unit3.service", ActiveState: "inactive", SubState: "my_substate"},
 	}, nil)
 
 	stats.On("GetUnitTypeProperties", mock.Anything, mock.Anything, mock.Anything).Return(map[string]interface{}{
@@ -105,9 +105,9 @@ func TestOverallMetrics(t *testing.T) {
 
 	// asssertions
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.active.count", float64(2), "", []string(nil))
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit1.service", "active_state:active"})
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit2.service", "active_state:active"})
-	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit3.service", "active_state:inactive"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit1.service", "active_state:active", "sub_state:my_substate"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit2.service", "active_state:active", "sub_state:my_substate"})
+	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", []string{"unit:unit3.service", "active_state:inactive", "sub_state:my_substate"})
 	mockSender.AssertNumberOfCalls(t, "Gauge", 4)
 	mockSender.AssertNumberOfCalls(t, "Commit", 1)
 }
@@ -122,9 +122,9 @@ unit_names:
 
 	stats := &mockSystemdStats{}
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
-		{Name: "unit1.service", ActiveState: "active"},
-		{Name: "unit2.service", ActiveState: "active"},
-		{Name: "unit3.service", ActiveState: "inactive"},
+		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
+		{Name: "unit2.service", ActiveState: "active", SubState: "my_substate"},
+		{Name: "unit3.service", ActiveState: "inactive", SubState: "my_substate"},
 	}, nil)
 	stats.On("TimeNanoNow").Return(int64(1000 * 1000))
 
@@ -167,21 +167,21 @@ unit_names:
 	check.Run()
 
 	// asssertions
-	unit1Tags := []string{"unit:unit1.service", "active_state:active"}
+	unit1Tags := []string{"unit:unit1.service", "active_state:active", "sub_state:my_substate"}
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.cpu", float64(10), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.memory", float64(20), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.tasks", float64(30), "", unit1Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(900), "", unit1Tags)
 
-	unit2Tags := []string{"unit:unit2.service", "active_state:active"}
+	unit2Tags := []string{"unit:unit2.service", "active_state:active", "sub_state:my_substate"}
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.cpu", float64(110), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.memory", float64(120), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.tasks", float64(130), "", unit2Tags)
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.uptime", float64(800), "", unit2Tags)
 
-	unit3Tags := []string{"unit:unit3.service", "active_state:inactive"}
+	unit3Tags := []string{"unit:unit3.service", "active_state:inactive", "sub_state:my_substate"}
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.count", float64(1), "", unit3Tags)
 	mockSender.AssertNotCalled(t, "Gauge", "systemd.unit.cpu", mock.Anything, "", unit3Tags)
 
@@ -201,8 +201,8 @@ unit_names:
 
 	stats := &mockSystemdStats{}
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
-		{Name: "unit1.service", ActiveState: "active"},
-		{Name: "unit2.service", ActiveState: "inactive"},
+		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
+		{Name: "unit2.service", ActiveState: "inactive", SubState: "my_substate"},
 	}, nil)
 	stats.On("TimeNanoNow").Return(int64(1000 * 1000))
 
@@ -234,10 +234,10 @@ unit_names:
 	check.Run()
 
 	// asssertions
-	unit1Tags := []string{"unit:unit1.service", "active_state:active"}
+	unit1Tags := []string{"unit:unit1.service", "active_state:active", "sub_state:my_substate"}
 	mockSender.AssertCalled(t, "ServiceCheck", "systemd.unit.status", metrics.ServiceCheckOK, "", unit1Tags, "")
 
-	unit2Tags := []string{"unit:unit2.service", "active_state:inactive"}
+	unit2Tags := []string{"unit:unit2.service", "active_state:inactive", "sub_state:my_substate"}
 	mockSender.AssertCalled(t, "ServiceCheck", "systemd.unit.status", metrics.ServiceCheckCritical, "", unit2Tags, "")
 
 	mockSender.AssertNumberOfCalls(t, "ServiceCheck", 2)

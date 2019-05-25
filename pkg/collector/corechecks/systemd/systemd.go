@@ -26,6 +26,7 @@ const (
 	systemdCheckName   = "systemd"
 	unitTag            = "unit"
 	unitActiveStateTag = "active_state"
+	unitSubStateTag    = "sub_state"
 	unitActiveState    = "active"
 	unitTypeUnit       = "Unit"
 	unitTypeService    = "Service"
@@ -104,42 +105,14 @@ func (c *Check) Run() error {
 	defer c.stats.CloseConn(conn)
 	// TODO: CHECK conn.SystemState()
 
-	// All Units
-	c.submitOverallUnitMetrics(sender, conn)
-
-	// Monitored Units
-	for _, unitName := range c.config.instance.UnitNames {
-		tags := []string{unitTag + ":" + unitName}
-		tags = append(tags, c.getUnitTags(conn, unitName)...)
-
-		c.submitMonitoredUnitMetrics(sender, conn, unitName, tags)
-		if strings.HasSuffix(unitName, "."+serviceSuffix) {
-			c.submitMonitoredServiceMetrics(sender, conn, unitName, tags)
-		}
-	}
+	c.submitUnitMetrics(sender, conn)
 
 	sender.Commit()
 	return nil
 }
 
-func (c *Check) getUnitTags(conn *dbus.Conn, unitName string) []string {
-	unitProperties, err := c.stats.GetUnitTypeProperties(conn, unitName, unitTypeUnit)
-	if err != nil {
-		log.Errorf("Error getting unitProperties for service: %s", unitName)
-		// TODO: test this case
-		return nil
-	}
-	activeState, err := getStringProperty(unitProperties, "ActiveState")
-	if err != nil {
-		log.Errorf("Error getting property '%s' for unit '%s'", err, unitName)
-		// TODO: test this case
-		return nil
-	}
-	return []string{unitActiveStateTag + ":" + activeState}
-}
-
-func (c *Check) submitOverallUnitMetrics(sender aggregator.Sender, conn *dbus.Conn) {
-	log.Info("Check Overall Metrics")
+func (c *Check) submitUnitMetrics(sender aggregator.Sender, conn *dbus.Conn) {
+	log.Info("Check Unit Metrics")
 	units, err := c.stats.ListUnits(conn)
 	if err != nil {
 		log.Errorf("Error getting list of units")
@@ -153,9 +126,20 @@ func (c *Check) submitOverallUnitMetrics(sender aggregator.Sender, conn *dbus.Co
 			activeUnitCounter++
 		}
 
-		tags := []string{unitTag + ":" + unit.Name}
-		tags = append(tags, unitActiveStateTag+":"+unit.ActiveState)
+		tags := []string{
+			unitTag + ":" + unit.Name,
+			unitActiveStateTag + ":" + unit.ActiveState,
+			unitSubStateTag + ":" + unit.SubState,
+		}
+
 		sender.Gauge("systemd.unit.count", 1, "", tags)
+
+		if c.isMonitored(unit.Name) {
+			c.submitMonitoredUnitMetrics(sender, conn, unit.Name, tags)
+			if strings.HasSuffix(unit.Name, "."+serviceSuffix) {
+				c.submitMonitoredServiceMetrics(sender, conn, unit.Name, tags)
+			}
+		}
 	}
 
 	sender.Gauge("systemd.unit.active.count", float64(activeUnitCounter), "", nil)
@@ -245,6 +229,15 @@ func getServiceCheckStatus(activeState string) metrics.ServiceCheckStatus {
 		return metrics.ServiceCheckUnknown
 	}
 	return metrics.ServiceCheckUnknown
+}
+
+func (c *Check) isMonitored(unitName string) bool {
+	for _, name := range c.config.instance.UnitNames {
+		if name == unitName {
+			return true
+		}
+	}
+	return false
 }
 
 // Configure configures the systemd checks
