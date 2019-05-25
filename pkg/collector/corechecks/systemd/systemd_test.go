@@ -84,12 +84,8 @@ func TestOverallMetrics(t *testing.T) {
 		{Name: "unit3.service", ActiveState: "inactive", SubState: "my_substate"},
 	}, nil)
 
-	stats.On("GetUnitTypeProperties", mock.Anything, mock.Anything, mock.Anything).Return(map[string]interface{}{
-		"ActiveState":          "active",
-		"CPUUsageNSec":         uint64(10),
-		"MemoryCurrent":        uint64(20),
-		"TasksCurrent":         uint64(30),
-		"ActiveEnterTimestamp": uint64(40),
+	stats.On("GetUnitTypeProperties", mock.Anything, mock.Anything, unitTypeService).Return(map[string]interface{}{
+		"ActiveEnterTimestamp": uint64(999),
 	}, nil)
 
 	check := Check{stats: stats}
@@ -141,15 +137,12 @@ unit_names:
 	}, nil)
 
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit1.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "active",
 		"ActiveEnterTimestamp": uint64(100),
 	}, nil)
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit2.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "active",
 		"ActiveEnterTimestamp": uint64(200),
 	}, nil)
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit3.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "inactive",
 		"ActiveEnterTimestamp": uint64(300),
 	}, nil)
 
@@ -213,11 +206,9 @@ unit_names:
 	}, nil)
 
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit1.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "active",
 		"ActiveEnterTimestamp": uint64(100),
 	}, nil)
 	stats.On("GetUnitTypeProperties", mock.Anything, "unit2.service", unitTypeUnit).Return(map[string]interface{}{
-		"ActiveState":          "inactive",
 		"ActiveEnterTimestamp": uint64(200),
 	}, nil)
 
