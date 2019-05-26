@@ -227,6 +227,11 @@ func (c *Check) isMonitored(unitName string) bool {
 			return true
 		}
 	}
+	for _, pattern := range c.config.instance.UnitRegexPatterns {
+		if pattern.MatchString(unitName) {
+			return true
+		}
+	}
 	return false
 }
 

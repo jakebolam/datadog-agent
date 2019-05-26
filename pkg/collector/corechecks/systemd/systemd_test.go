@@ -75,6 +75,23 @@ unit_regex:
 	}
 	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
 }
+func TestConfigurationSkipOnRegexError(t *testing.T) {
+	// setup data
+	check := Check{}
+	rawInstanceConfig := []byte(`
+unit_regex:
+ - lvm2-.*
+ - cloud-[[$$.*
+ - abc
+`)
+	check.Configure(rawInstanceConfig, []byte(``))
+
+	regexes := []*regexp.Regexp{
+		regexp.MustCompile("lvm2-.*"),
+		regexp.MustCompile("abc"),
+	}
+	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
+}
 func TestOverallMetrics(t *testing.T) {
 	// setup data
 	stats := &mockSystemdStats{}
@@ -250,6 +267,45 @@ func TestGetServiceCheckStatus(t *testing.T) {
 	for _, d := range data {
 		t.Run(fmt.Sprintf("expected mapping from %s to %s", d.activeState, d.expectedStatus), func(t *testing.T) {
 			assert.Equal(t, d.expectedStatus, getServiceCheckStatus(d.activeState))
+		})
+	}
+}
+
+func TestIsMonitored(t *testing.T) {
+	// setup data
+	rawInstanceConfig := []byte(`
+unit_names:
+  - unit1.service
+  - unit2.service
+unit_regex:
+  - docker-.*
+  - abc 
+  - ^efg
+  - ^zyz$
+`)
+
+	check := Check{}
+	check.Configure(rawInstanceConfig, nil)
+
+	data := []struct {
+		unitName              string
+		expectedToBeMonitored bool
+	}{
+		{"unit1.service", true},
+		{"unit2.service", true},
+		{"unit3.service", false},
+		{"mydocker-abc.service", true},
+		{"docker-abc.service", true},
+		{"docker-123.socket", true},
+		{"abc", true},
+		{"abcd", true},
+		{"xxabcd", true},
+		{"efg111", true},
+		{"z_efg111", false},
+	}
+	for _, d := range data {
+		t.Run(fmt.Sprintf("check.isMonitored('%s') expected to be %v", d.unitName, d.expectedToBeMonitored), func(t *testing.T) {
+			assert.Equal(t, d.expectedToBeMonitored, check.isMonitored(d.unitName))
 		})
 	}
 }
