@@ -14,6 +14,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/aggregator/mocksender"
 	"github.com/DataDog/datadog-agent/pkg/metrics"
 	"github.com/coreos/go-systemd/dbus"
+	godbus "github.com/godbus/dbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -22,8 +23,21 @@ type mockSystemdStats struct {
 	mock.Mock
 }
 
+func createDefaultMockSystemdStats() *mockSystemdStats {
+	stats := &mockSystemdStats{}
+	stats.On("NewConn").Return(&dbus.Conn{}, nil)
+	stats.On("SystemState", mock.Anything).Return(&dbus.Property{Name: "SystemState", Value: godbus.MakeVariant("running")}, nil)
+	return stats
+}
+
 func (s *mockSystemdStats) NewConn() (*dbus.Conn, error) {
-	return nil, nil
+	args := s.Mock.Called()
+	return args.Get(0).(*dbus.Conn), args.Error(1)
+}
+
+func (s *mockSystemdStats) SystemState(conn *dbus.Conn) (*dbus.Property, error) {
+	args := s.Mock.Called(conn)
+	return args.Get(0).(*dbus.Property), args.Error(1)
 }
 
 func (s *mockSystemdStats) CloseConn(c *dbus.Conn) {
@@ -75,6 +89,50 @@ unit_regex:
 	}
 	assert.Equal(t, regexes, check.config.instance.UnitRegexPatterns)
 }
+
+func TestDbusConnectionErr(t *testing.T) {
+	stats := &mockSystemdStats{}
+	stats.On("NewConn").Return((*dbus.Conn)(nil), fmt.Errorf("some error"))
+
+	check := Check{stats: stats}
+	check.Configure([]byte(``), []byte(``))
+	mocksender.NewMockSender(check.ID()) // required to initiate aggregator
+
+	err := check.Run()
+
+	assert.EqualError(t, err, "New Connection Err: some error")
+
+}
+
+func TestSystemStateCallErr(t *testing.T) {
+	stats := &mockSystemdStats{}
+	stats.On("NewConn").Return(&dbus.Conn{}, nil)
+	stats.On("SystemState", mock.Anything).Return((*dbus.Property)(nil), fmt.Errorf("some error"))
+	// stats.On("SystemState", mock.Anything).Return(&dbus.Property{Name: "SystemState", Value: godbus.MakeVariant("running")}, nil)
+
+	check := Check{stats: stats}
+	check.Configure([]byte(``), []byte(``))
+	mocksender.NewMockSender(check.ID()) // required to initiate aggregator
+
+	err := check.Run()
+
+	assert.EqualError(t, err, "Err calling SystemState: some error")
+}
+
+func TestSystemStateNotRunningErr(t *testing.T) {
+	stats := &mockSystemdStats{}
+	stats.On("NewConn").Return(&dbus.Conn{}, nil)
+	stats.On("SystemState", mock.Anything).Return(&dbus.Property{Name: "SystemState", Value: godbus.MakeVariant("failed")}, nil)
+
+	check := Check{stats: stats}
+	check.Configure([]byte(``), []byte(``))
+	mocksender.NewMockSender(check.ID()) // required to initiate aggregator
+
+	err := check.Run()
+
+	assert.EqualError(t, err, "System state expected to be 'running' but is: failed")
+}
+
 func TestConfigurationSkipOnRegexError(t *testing.T) {
 	// setup data
 	check := Check{}
@@ -94,7 +152,7 @@ unit_regex:
 }
 func TestOverallMetrics(t *testing.T) {
 	// setup data
-	stats := &mockSystemdStats{}
+	stats := createDefaultMockSystemdStats()
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
 		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
 		{Name: "unit2.service", ActiveState: "active", SubState: "my_substate"},
@@ -114,7 +172,8 @@ func TestOverallMetrics(t *testing.T) {
 	mockSender.On("Commit").Return()
 
 	// run
-	check.Run()
+	err := check.Run()
+	assert.Nil(t, err)
 
 	// asssertions
 	mockSender.AssertCalled(t, "Gauge", "systemd.unit.active.count", float64(2), "", []string(nil))
@@ -133,7 +192,7 @@ unit_names:
  - unit2.service
 `)
 
-	stats := &mockSystemdStats{}
+	stats := createDefaultMockSystemdStats()
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
 		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
 		{Name: "unit2.service", ActiveState: "active", SubState: "my_substate"},
@@ -209,7 +268,7 @@ unit_names:
  - unit2.service
 `)
 
-	stats := &mockSystemdStats{}
+	stats := createDefaultMockSystemdStats()
 	stats.On("ListUnits", mock.Anything).Return([]dbus.UnitStatus{
 		{Name: "unit1.service", ActiveState: "active", SubState: "my_substate"},
 		{Name: "unit2.service", ActiveState: "inactive", SubState: "my_substate"},
@@ -306,6 +365,25 @@ unit_regex:
 	for _, d := range data {
 		t.Run(fmt.Sprintf("check.isMonitored('%s') expected to be %v", d.unitName, d.expectedToBeMonitored), func(t *testing.T) {
 			assert.Equal(t, d.expectedToBeMonitored, check.isMonitored(d.unitName))
+		})
+	}
+}
+
+func TestGetUptime(t *testing.T) {
+	data := map[string]struct {
+		activeState     string
+		activeEnterTime uint64
+		nanoNow         int64
+		expectedUptime  int64
+	}{
+		"active happy path":              {"active", 1000 * 1000, 2500 * 1000 * 1000, 1500 * 1000},
+		"inactive with valid enter time": {"inactive", 1000 * 1000, 2500 * 1000 * 1000, 0},
+		"inactive zero":                  {"inactive", 0, 0, 0},
+		"invalid enter time after now":   {"active", 1000 * 1000, 500 * 1000 * 1000, 0},
+	}
+	for name, d := range data {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, d.expectedUptime, getUptime(d.activeState, d.activeEnterTime, d.nanoNow))
 		})
 	}
 }

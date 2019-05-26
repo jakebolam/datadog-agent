@@ -57,6 +57,7 @@ type systemdStats interface {
 	// Dbus Connection
 	NewConn() (*dbus.Conn, error)
 	CloseConn(c *dbus.Conn)
+	SystemState(c *dbus.Conn) (*dbus.Property, error)
 
 	// System Data
 	ListUnits(c *dbus.Conn) ([]dbus.UnitStatus, error)
@@ -70,6 +71,10 @@ type defaultSystemdStats struct{}
 
 func (s *defaultSystemdStats) NewConn() (*dbus.Conn, error) {
 	return dbus.New()
+}
+
+func (s *defaultSystemdStats) SystemState(c *dbus.Conn) (*dbus.Property, error) {
+	return c.SystemState()
 }
 
 func (s *defaultSystemdStats) CloseConn(c *dbus.Conn) {
@@ -92,18 +97,23 @@ func (s *defaultSystemdStats) GetUnitTypeProperties(c *dbus.Conn, unitName strin
 func (c *Check) Run() error {
 	sender, err := aggregator.GetSender(c.ID())
 	if err != nil {
-		// TODO: test this case
 		return err
 	}
 
 	conn, err := c.stats.NewConn()
 	if err != nil {
-		log.Error("New Connection Err: ", err)
-		// TODO: test this case
-		return err
+		return fmt.Errorf("New Connection Err: %v", err)
 	}
 	defer c.stats.CloseConn(conn)
-	// TODO: CHECK conn.SystemState()
+
+	prop, err := c.stats.SystemState(conn)
+	if err != nil {
+		return fmt.Errorf("Err calling SystemState: %v", err)
+	}
+	systemState := strings.Trim(prop.Value.String(), "\"")
+	if systemState != "running" {
+		return fmt.Errorf("System state expected to be 'running' but is: %v", systemState)
+	}
 
 	c.submitUnitMetrics(sender, conn)
 
@@ -159,7 +169,7 @@ func (c *Check) submitMonitoredUnitMetrics(sender aggregator.Sender, conn *dbus.
 		// TODO: test this dase
 		return
 	}
-	sender.Gauge("systemd.unit.uptime", float64(getUptime(activeEnterTime, c.stats.TimeNanoNow())), "", tags)
+	sender.Gauge("systemd.unit.uptime", float64(getUptime(unit.ActiveState, activeEnterTime, c.stats.TimeNanoNow())), "", tags)
 	sender.ServiceCheck("systemd.unit.status", getServiceCheckStatus(unit.ActiveState), "", tags, "")
 }
 
@@ -186,8 +196,14 @@ func sendPropertyAsGauge(sender aggregator.Sender, properties map[string]interfa
 	sender.Gauge(metric, float64(value), "", tags)
 }
 
-func getUptime(activeEnterTime uint64, nanoNow int64) int64 {
+func getUptime(activeState string, activeEnterTime uint64, nanoNow int64) int64 {
+	if activeState != unitActiveState {
+		return 0
+	}
 	uptime := nanoNow/1000 - int64(activeEnterTime)
+	if uptime < 0 {
+		return 0
+	}
 	return uptime
 }
 
@@ -196,15 +212,6 @@ func getNumberProperty(properties map[string]interface{}, propertyName string) (
 	if !ok {
 		// TODO: test this case
 		return 0, fmt.Errorf("Property %s is not a uint64", propertyName)
-	}
-	return value, nil
-}
-
-func getStringProperty(properties map[string]interface{}, propertyName string) (string, error) {
-	value, ok := properties[propertyName].(string)
-	if !ok {
-		// TODO: test this case
-		return "", fmt.Errorf("Property %s is not a string", propertyName)
 	}
 	return value, nil
 }
@@ -239,17 +246,14 @@ func (c *Check) isMonitored(unitName string) bool {
 func (c *Check) Configure(rawInstance integration.Data, rawInitConfig integration.Data) error {
 	err := c.CommonConfigure(rawInstance)
 	if err != nil {
-		// TODO: test this case
 		return err
 	}
 	err = yaml.Unmarshal(rawInitConfig, &c.config.initConf)
 	if err != nil {
-		// TODO: test this case
 		return err
 	}
 	err = yaml.Unmarshal(rawInstance, &c.config.instance)
 	if err != nil {
-		// TODO: test this case
 		return err
 	}
 
@@ -257,7 +261,6 @@ func (c *Check) Configure(rawInstance integration.Data, rawInitConfig integratio
 		pattern, err := regexp.Compile(regexString)
 		if err != nil {
 			log.Errorf("Failed to parse systemd check option unit_regex: %s", err)
-			// TODO: test this case
 			continue
 		}
 		c.config.instance.UnitRegexPatterns = append(c.config.instance.UnitRegexPatterns, pattern)
